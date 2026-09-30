@@ -1,0 +1,13 @@
+{
+  "schema": "GOODDAY220-MODULE-1",
+  "id": "goodday",
+  "display_name": "Goodday",
+  "state": "NOT_INSTALLED",
+  "install_policy": "DISABLED",
+  "phase": "FUTURE",
+  "source": "TO_BE_DEFINED_LATER",
+  "requires_base": true,
+  "independent_installation": true,
+  "independent_verification": true,
+  "independent_removal": true
+}
