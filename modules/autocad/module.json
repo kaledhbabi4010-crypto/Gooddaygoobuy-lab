@@ -1,0 +1,13 @@
+{
+  "schema": "GOODDAY220-MODULE-1",
+  "id": "autocad",
+  "display_name": "AutoCAD",
+  "state": "NOT_INSTALLED",
+  "install_policy": "DISABLED",
+  "phase": "FUTURE",
+  "source": "OFFICIAL_INSTALL_SOURCE_TO_BE_SELECTED_LATER",
+  "requires_base": true,
+  "independent_installation": true,
+  "independent_verification": true,
+  "independent_removal": true
+}
