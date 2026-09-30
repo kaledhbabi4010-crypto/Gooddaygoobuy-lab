@@ -1,0 +1,372 @@
+name: GOODDAY220 Windows Base Real Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      lab_mode:
+        description: "Windows base lab mode"
+        required: true
+        default: "base"
+        type: choice
+        options:
+          - base
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goodday220-windows-base
+  cancel-in-progress: false
+
+jobs:
+
+  windows-base:
+
+    name: Windows Base Runtime Verification
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+
+      - name: Checkout lab controller
+        uses: actions/checkout@v4
+
+      - name: Windows identity
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== WINDOWS IDENTITY ==="
+          Get-ComputerInfo |
+            Select-Object `
+              WindowsProductName,
+              WindowsVersion,
+              OsBuildNumber,
+              OsArchitecture |
+            Format-List
+
+          Write-Host "=== HOST ==="
+          hostname
+
+          Write-Host "=== POWERSHELL ==="
+          $PSVersionTable | Format-List
+
+      - name: Hardware inventory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+
+          $cpu = Get-CimInstance Win32_Processor |
+            Select-Object Name,NumberOfCores,NumberOfLogicalProcessors
+
+          $memory = Get-CimInstance Win32_ComputerSystem |
+            Select-Object TotalPhysicalMemory
+
+          $disk = Get-CimInstance Win32_LogicalDisk `
+            -Filter "DriveType=3" |
+            Select-Object DeviceID,Size,FreeSpace
+
+          [ordered]@{
+            cpu = @($cpu)
+            memory = $memory
+            disk = @($disk)
+          } |
+          ConvertTo-Json -Depth 10 |
+          Set-Content -Encoding UTF8 evidence/hardware.json
+
+          Get-Content evidence/hardware.json
+
+      - name: Detect base toolchain
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+
+          function Probe {
+            param(
+              [string]$Name,
+              [string]$Command,
+              [string[]]$Args = @("--version")
+            )
+
+            $obj = [ordered]@{
+              name = $Name
+              command = $Command
+              found = $false
+              status = "NOT_PROVEN"
+              output = $null
+            }
+
+            try {
+              $cmd = Get-Command $Command -ErrorAction Stop
+              $obj.found = $true
+
+              try {
+                $obj.output = (
+                  & $cmd.Source @Args 2>&1 |
+                  Out-String
+                ).Trim()
+                $obj.status = "RUNTIME_CONFIRMED"
+              } catch {
+                $obj.output = $_.Exception.Message
+                $obj.status = "NOT_PROVEN"
+              }
+
+            } catch {
+              $obj.output = $_.Exception.Message
+            }
+
+            return $obj
+          }
+
+          $items = @()
+
+          $items += Probe "Python" "python" @("--version")
+          $items += Probe "PythonLauncher" "py" @("--version")
+          $items += Probe "Git" "git" @("--version")
+          $items += Probe "DotNet" "dotnet" @("--version")
+          $items += Probe "CMake" "cmake" @("--version")
+          $items += Probe "7Zip" "7z" @()
+
+          $items += [ordered]@{
+            name = "PowerShell"
+            command = "powershell"
+            found = $true
+            status = "RUNTIME_CONFIRMED"
+            output = $PSVersionTable.PSVersion.ToString()
+          }
+
+          $items |
+            ConvertTo-Json -Depth 10 |
+            Set-Content -Encoding UTF8 evidence/toolchain.json
+
+          Get-Content evidence/toolchain.json
+
+      - name: Detect MSVC
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $vswhereCandidates = @(
+            "$env:ProgramFiles(x86)\Microsoft Visual Studio\Installer\vswhere.exe",
+            "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
+          )
+
+          $vswhere = $vswhereCandidates |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+
+          if ($vswhere) {
+
+            Write-Host "vswhere=$vswhere"
+
+            $json = & $vswhere `
+              -products * `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -format json 2>&1
+
+            $code = $LASTEXITCODE
+
+            [ordered]@{
+              vswhere = $vswhere
+              exit_code = $code
+              status = if ($code -eq 0 -and $json) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+              evidence = ($json | Out-String).Trim()
+            } |
+            ConvertTo-Json -Depth 20 |
+            Set-Content -Encoding UTF8 evidence/msvc.json
+
+          } else {
+
+            [ordered]@{
+              vswhere = $null
+              status = "NOT_PROVEN"
+              evidence = "vswhere.exe not found"
+            } |
+            ConvertTo-Json -Depth 10 |
+            Set-Content -Encoding UTF8 evidence/msvc.json
+          }
+
+          Get-Content evidence/msvc.json
+
+      - name: Detect Windows SDK
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $roots = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows Kits\Installed Roots"
+          )
+
+          $found = @()
+
+          foreach ($root in $roots) {
+
+            try {
+              $p = Get-ItemProperty $root -ErrorAction Stop
+
+              foreach (
+                $prop in $p.PSObject.Properties |
+                Where-Object { $_.Name -like "KitsRoot*" }
+              ) {
+                if ($prop.Value -and (Test-Path $prop.Value)) {
+                  $found += "$($prop.Name)=$($prop.Value)"
+                }
+              }
+
+            } catch {}
+          }
+
+          [ordered]@{
+            status = if ($found.Count -gt 0) {
+              "RUNTIME_CONFIRMED"
+            } else {
+              "NOT_PROVEN"
+            }
+            installations = $found
+          } |
+          ConvertTo-Json -Depth 10 |
+          Set-Content -Encoding UTF8 evidence/windows-sdk.json
+
+          Get-Content evidence/windows-sdk.json
+
+      - name: Python runtime self-test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          python --version
+          python -c "import sys,platform; print(sys.executable); print(platform.platform()); print(sys.version)"
+
+          python -m pip --version
+
+          python -c "import ssl,hashlib,json,subprocess,pathlib; print('PYTHON_RUNTIME_SELF_TEST=RUNTIME_CONFIRMED')"
+
+      - name: PowerShell runtime self-test
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $PSVersionTable | Format-List
+
+          $test = [ordered]@{
+            powershell = $PSVersionTable.PSVersion.ToString()
+            execution = "RUNTIME_CONFIRMED"
+          }
+
+          $test |
+            ConvertTo-Json |
+            Set-Content -Encoding UTF8 evidence/powershell.json
+
+      - name: Persistence capability inventory
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          [ordered]@{
+            current_runner = "github-hosted-windows-2022"
+            current_run_persistence = "EPHEMERAL"
+            repository_bootstrap_persistence = "AVAILABLE"
+            future_self_hosted_persistence = "SUPPORTED_BY_DESIGN"
+            future_modules_independent = $true
+            install_all_modules_together_required = $false
+          } |
+          ConvertTo-Json -Depth 10 |
+          Set-Content -Encoding UTF8 evidence/persistence.json
+
+      - name: Validate future module manifests
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $required = @(
+            "modules/goodday/module.json",
+            "modules/autocad/module.json",
+            "modules/revit/module.json"
+          )
+
+          foreach ($file in $required) {
+
+            if (-not (Test-Path $file)) {
+              throw "MODULE_MANIFEST_MISSING: $file"
+            }
+
+            $data = Get-Content $file -Raw |
+              ConvertFrom-Json
+
+            if ($data.state -ne "NOT_INSTALLED") {
+              throw "MODULE_STATE_INVALID: $file"
+            }
+
+            if ($data.install_policy -ne "DISABLED") {
+              throw "MODULE_POLICY_INVALID: $file"
+            }
+
+            if ($data.independent_installation -ne $true) {
+              throw "MODULE_INDEPENDENCE_INVALID: $file"
+            }
+          }
+
+          Write-Host "MODULE_ARCHITECTURE=RUNTIME_CONFIRMED"
+
+      - name: Final evidence report
+        if: always()
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $files = @()
+
+          if (Test-Path evidence) {
+            $files = Get-ChildItem evidence -File -Recurse |
+              ForEach-Object {
+                [ordered]@{
+                  path = $_.FullName
+                  size = $_.Length
+                  sha256 = (
+                    Get-FileHash $_.FullName -Algorithm SHA256
+                  ).Hash
+                }
+              }
+          }
+
+          $report = [ordered]@{
+            schema = "GOODDAY220-WINDOWS-BASE-EVIDENCE-1"
+            timestamp_utc = (
+              Get-Date
+            ).ToUniversalTime().ToString("o")
+
+            runtime = [ordered]@{
+              runner_os = $env:RUNNER_OS
+              runner_arch = $env:RUNNER_ARCH
+              runner_name = $env:RUNNER_NAME
+              runner_image = "windows-2022"
+            }
+
+            current_phase = "BASE_ONLY"
+
+            future_modules = [ordered]@{
+              goodday = "NOT_INSTALLED"
+              autocad = "NOT_INSTALLED"
+              revit = "NOT_INSTALLED"
+            }
+
+            files = $files
+          }
+
+          $report |
+            ConvertTo-Json -Depth 20 |
+            Set-Content -Encoding UTF8 evidence/final-report.json
+
+          Get-Content evidence/final-report.json
+
+      - name: Upload Windows lab evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-WINDOWS-BASE-EVIDENCE
+          path: evidence
+          if-no-files-found: error
+          retention-days: 14
