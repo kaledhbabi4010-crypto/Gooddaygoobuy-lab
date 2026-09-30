@@ -1,4 +1,4 @@
-name: GOODDAY220 — REAL LAB FORENSIC
+name: GOODDAY220 — WINDOWS REAL LAB
 
 on:
   workflow_dispatch:
@@ -8,529 +8,409 @@ permissions:
 
 jobs:
 
-  real-lab:
+  # ---------------------------------------------------------------------------
+  # WINDOWS FORENSIC MATRIX
+  # Each probe is independent and therefore can execute in parallel.
+  # ---------------------------------------------------------------------------
 
-    name: GOODDAY220 REAL WINDOWS LAB
-
+  forensic:
+    name: Windows forensic — ${{ matrix.probe }}
     runs-on: windows-2022
 
-    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        probe:
+          - environment
+          - autodesk
+          - goodday
+          - integrity
 
     steps:
 
-      # ---------------------------------------------------------------
-      # 01 CHECKOUT
-      # ---------------------------------------------------------------
-
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      # ---------------------------------------------------------------
-      # 02 BASE MACHINE
-      # ---------------------------------------------------------------
-
-      - name: Windows base inventory
-        shell: powershell
+      - name: Create evidence directory
+        shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+          "GOODDAY220 WINDOWS REAL LAB" | Out-File evidence/header.txt
 
+      # -----------------------------------------------------------------------
+      # ENVIRONMENT
+      # -----------------------------------------------------------------------
+
+      - name: Environment probe
+        if: matrix.probe == 'environment'
+        shell: pwsh
+        run: |
           $ErrorActionPreference = "Continue"
-
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            evidence | Out-Null
 
           systeminfo |
             Out-File evidence/systeminfo.txt
 
-          Get-ComputerInfo |
-            ConvertTo-Json -Depth 10 |
-            Out-File evidence/computerinfo.json
+          Get-CimInstance Win32_OperatingSystem |
+            Format-List * |
+            Out-File evidence/os.txt
 
-          $PSVersionTable |
-            Out-String |
-            Out-File evidence/powershell.txt
+          Get-Command python -ErrorAction SilentlyContinue |
+            Format-List * |
+            Out-File evidence/python-command.txt
 
           python --version 2>&1 |
-            Out-File evidence/python.txt
+            Out-File evidence/python-version.txt
 
           git --version 2>&1 |
-            Out-File evidence/git.txt
+            Out-File evidence/git-version.txt
 
           dotnet --info 2>&1 |
-            Out-File evidence/dotnet.txt
+            Out-File evidence/dotnet-info.txt
 
-      # ---------------------------------------------------------------
-      # 03 VISUAL STUDIO / BUILD
-      # ---------------------------------------------------------------
-
-      - name: Build toolchain
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "Continue"
-
-          $vswhere = `
-            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-
-          if (Test-Path $vswhere) {
-
-            & $vswhere `
-              -all `
-              -format json `
-              2>&1 |
-              Out-File evidence/visualstudio.json
-
-          } else {
-
-            "VSWHERE_NOT_FOUND" |
-              Out-File evidence/visualstudio.txt
-          }
-
-          where.exe msbuild 2>&1 |
+          msbuild -version 2>&1 |
             Out-File evidence/msbuild.txt
 
-          where.exe dotnet 2>&1 |
-            Out-File evidence/dotnet-path.txt
+          Get-Command msbuild -ErrorAction SilentlyContinue |
+            Format-List * |
+            Out-File evidence/msbuild-command.txt
 
-          where.exe cl 2>&1 |
-            Out-File evidence/cl.txt
+          Get-Process |
+            Sort-Object ProcessName |
+            Out-File evidence/process-list.txt
 
-      # ---------------------------------------------------------------
-      # 04 AUTOCAD / REVIT PROCESS EVIDENCE
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # AUTODESK
+      # -----------------------------------------------------------------------
 
-      - name: Autodesk process evidence
-        shell: powershell
+      - name: Autodesk forensic probe
+        if: matrix.probe == 'autodesk'
+        shell: pwsh
         run: |
-
-          $ErrorActionPreference = "SilentlyContinue"
-
-          $result = @()
-
-          foreach ($name in @("acad","Revit")) {
-
-            $items = Get-Process `
-              -Name $name `
-              -ErrorAction SilentlyContinue
-
-            if ($items) {
-
-              foreach ($p in $items) {
-
-                $path = $null
-
-                try {
-                  $path = $p.Path
-                } catch {}
-
-                $result += [pscustomobject]@{
-                  ProcessName = $p.ProcessName
-                  PID = $p.Id
-                  Path = $path
-                }
-              }
-
-            } else {
-
-              $result += [pscustomobject]@{
-                ProcessName = $name
-                PID = $null
-                Path = $null
-              }
-            }
-          }
-
-          $result |
-            ConvertTo-Json -Depth 10 |
-            Out-File evidence/autodesk_processes.json
-
-      # ---------------------------------------------------------------
-      # 05 AUTOCAD / REVIT EXECUTABLE SEARCH
-      # ---------------------------------------------------------------
-
-      - name: Autodesk executable forensic search
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "SilentlyContinue"
+          $ErrorActionPreference = "Continue"
 
           $roots = @(
-            "C:\Program Files\Autodesk",
-            "C:\Program Files (x86)\Autodesk",
-            "C:\Autodesk",
-            "C:\ProgramData\Autodesk"
+            "$env:ProgramFiles\Autodesk",
+            "$env:ProgramFiles(x86)\Autodesk",
+            "$env:ProgramData\Autodesk",
+            "$env:LOCALAPPDATA\Autodesk",
+            "$env:APPDATA\Autodesk"
           )
 
-          $targets = @(
-            "acad.exe",
-            "Revit.exe"
-          )
+          New-Item -ItemType Directory -Force -Path evidence\autodesk | Out-Null
 
-          $found = @()
+          $roots |
+            Out-File evidence\autodesk\roots.txt
+
+          Get-Process acad -ErrorAction SilentlyContinue |
+            Format-List * |
+            Out-File evidence\autodesk\acad-process.txt
+
+          Get-Process Revit -ErrorAction SilentlyContinue |
+            Format-List * |
+            Out-File evidence\autodesk\revit-process.txt
+
+          $acad = @()
+          $revit = @()
 
           foreach ($root in $roots) {
-
-            if (!(Test-Path $root)) {
-              continue
-            }
-
-            foreach ($target in $targets) {
-
-              Get-ChildItem `
-                -Path $root `
-                -Filter $target `
-                -File `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-              ForEach-Object {
-
-                $signature = $null
-                $version = $null
-
-                try {
-                  $signature = Get-AuthenticodeSignature `
-                    -FilePath $_.FullName
-                } catch {}
-
-                try {
-                  $version = $_.VersionInfo
-                } catch {}
-
-                $found += [pscustomobject]@{
-
-                  Name = $_.Name
-                  FullPath = $_.FullName
-                  Length = $_.Length
-                  SHA256 = (
-                    Get-FileHash `
-                      -Algorithm SHA256 `
-                      -Path $_.FullName `
-                      -ErrorAction SilentlyContinue
-                  ).Hash
-
-                  FileVersion = (
-                    try {
-                      $version.FileVersion
-                    } catch {
-                      $null
-                    }
-                  )
-
-                  ProductVersion = (
-                    try {
-                      $version.ProductVersion
-                    } catch {
-                      $null
-                    }
-                  )
-
-                  CompanyName = (
-                    try {
-                      $version.CompanyName
-                    } catch {
-                      $null
-                    }
-                  )
-
-                  DigitalSignatureStatus = (
-                    try {
-                      $signature.Status.ToString()
-                    } catch {
-                      $null
-                    }
-                  )
-
-                  SignerSubject = (
-                    try {
-                      $signature.SignerCertificate.Subject
-                    } catch {
-                      $null
-                    }
-                  )
-                }
-              }
-            }
-          }
-
-          $found |
-            ConvertTo-Json -Depth 15 |
-            Out-File evidence/autodesk_executables.json
-
-      # ---------------------------------------------------------------
-      # 06 REGISTRY
-      # ---------------------------------------------------------------
-
-      - name: Autodesk registry evidence
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "SilentlyContinue"
-
-          $roots = @(
-            "HKLM:\SOFTWARE\Autodesk",
-            "HKLM:\SOFTWARE\WOW6432Node\Autodesk",
-            "HKCU:\SOFTWARE\Autodesk"
-          )
-
-          $result = @()
-
-          foreach ($root in $roots) {
-
             if (Test-Path $root) {
+              try {
+                $acad += Get-ChildItem `
+                  -Path $root `
+                  -Filter acad.exe `
+                  -Recurse `
+                  -File `
+                  -ErrorAction SilentlyContinue
+              } catch {}
 
-              $result += [pscustomobject]@{
-                Path = $root
-                Exists = $true
-                Children = @(
-                  Get-ChildItem `
-                    $root `
-                    -ErrorAction SilentlyContinue |
-                    Select-Object -ExpandProperty PSPath
-                )
-              }
-
-            } else {
-
-              $result += [pscustomobject]@{
-                Path = $root
-                Exists = $false
-              }
+              try {
+                $revit += Get-ChildItem `
+                  -Path $root `
+                  -Filter Revit.exe `
+                  -Recurse `
+                  -File `
+                  -ErrorAction SilentlyContinue
+              } catch {}
             }
           }
 
-          $result |
-            ConvertTo-Json -Depth 20 |
-            Out-File evidence/autodesk_registry.json
+          $acad = $acad | Sort-Object FullName -Unique
+          $revit = $revit | Sort-Object FullName -Unique
 
-      # ---------------------------------------------------------------
-      # 07 INSTALLED SOFTWARE
-      # ---------------------------------------------------------------
+          $acad |
+            Select-Object FullName,Length,LastWriteTime |
+            ConvertTo-Json -Depth 5 |
+            Out-File evidence\autodesk\acad-files.json
 
-      - name: Installed Autodesk software
-        shell: powershell
-        run: |
+          $revit |
+            Select-Object FullName,Length,LastWriteTime |
+            ConvertTo-Json -Depth 5 |
+            Out-File evidence\autodesk\revit-files.json
 
-          $ErrorActionPreference = "SilentlyContinue"
+          foreach ($f in $acad) {
+            Get-AuthenticodeSignature $f.FullName |
+              Select-Object Path,Status,StatusMessage,SignerCertificate |
+              Format-List * |
+              Out-File evidence\autodesk\acad-signature.txt -Append
 
-          $paths = @(
+            Get-FileHash $f.FullName -Algorithm SHA256 |
+              Format-List * |
+              Out-File evidence\autodesk\acad-sha256.txt -Append
+
+            (Get-Item $f.FullName).VersionInfo |
+              Format-List * |
+              Out-File evidence\autodesk\acad-version.txt -Append
+          }
+
+          foreach ($f in $revit) {
+            Get-AuthenticodeSignature $f.FullName |
+              Select-Object Path,Status,StatusMessage,SignerCertificate |
+              Format-List * |
+              Out-File evidence\autodesk\revit-signature.txt -Append
+
+            Get-FileHash $f.FullName -Algorithm SHA256 |
+              Format-List * |
+              Out-File evidence\autodesk\revit-sha256.txt -Append
+
+            (Get-Item $f.FullName).VersionInfo |
+              Format-List * |
+              Out-File evidence\autodesk\revit-version.txt -Append
+          }
+
+          $uninstall = @(
             "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
             "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
             "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
           )
 
-          $apps = @()
-
-          foreach ($path in $paths) {
-
-            $apps += Get-ItemProperty $path |
+          foreach ($key in $uninstall) {
+            Get-ItemProperty $key -ErrorAction SilentlyContinue |
               Where-Object {
-                $_.DisplayName -match `
-                  "Autodesk|AutoCAD|Revit"
+                $_.DisplayName -match "AutoCAD|Revit|Autodesk"
               } |
-              Select-Object `
-                DisplayName,
-                DisplayVersion,
-                Publisher,
-                InstallLocation,
-                UninstallString
+              Select-Object DisplayName,DisplayVersion,Publisher,InstallLocation,UninstallString |
+              Format-List * |
+              Out-File evidence\autodesk\installed-software.txt -Append
           }
 
-          $apps |
-            ConvertTo-Json -Depth 15 |
-            Out-File evidence/autodesk_installed.json
-
-      # ---------------------------------------------------------------
-      # 08 SERVICES
-      # ---------------------------------------------------------------
-
-      - name: Autodesk services
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "SilentlyContinue"
-
-          Get-Service |
+          Get-Service -ErrorAction SilentlyContinue |
             Where-Object {
-              $_.Name -match "Autodesk|Adsk" `
-              -or
-              $_.DisplayName -match "Autodesk|Adsk"
+              $_.Name -match "Adsk|Autodesk" -or
+              $_.DisplayName -match "Autodesk"
             } |
-            Select-Object `
-              Name,
-              DisplayName,
-              Status,
-              StartType |
-            ConvertTo-Json -Depth 10 |
-            Out-File evidence/autodesk_services.json
-
-      # ---------------------------------------------------------------
-      # 09 GOODDAY INVENTORY
-      # ---------------------------------------------------------------
-
-      - name: Goodday inventory
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "Continue"
-
-          git rev-parse HEAD |
-            Out-File evidence/goodday_head.txt
-
-          git status --short |
-            Out-File evidence/goodday_git_status.txt
-
-          Get-ChildItem `
-            -Recurse `
-            -File |
-            Measure-Object |
-            Out-File evidence/file_count.txt
-
-          Get-ChildItem `
-            -Recurse `
-            -Filter "*.py" `
-            -File |
-            Select-Object FullName |
-            Out-File evidence/python_files.txt
-
-      # ---------------------------------------------------------------
-      # 10 PYTHON COMPILE
-      # ---------------------------------------------------------------
-
-      - name: Python compile
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "Continue"
-
-          python -m compileall -q . 2>&1 |
-            Out-File evidence/compileall.txt
-
-          "EXIT_CODE=$LASTEXITCODE" |
-            Out-File evidence/compile_exit.txt
-
-      # ---------------------------------------------------------------
-      # 11 PYTEST
-      # ---------------------------------------------------------------
-
-      - name: Pytest collection
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "Continue"
-
-          python -m pytest `
-            --collect-only `
-            -q `
-            2>&1 |
-            Out-File evidence/pytest_collect.txt
-
-          "EXIT_CODE=$LASTEXITCODE" |
-            Out-File evidence/pytest_collect_exit.txt
-
-      # ---------------------------------------------------------------
-      # 12 FINAL DECISION
-      # ---------------------------------------------------------------
-
-      - name: Build forensic decision
-        shell: powershell
-        run: |
-
-          $ErrorActionPreference = "Continue"
-
-          $exe = @()
-
-          if (Test-Path evidence/autodesk_executables.json) {
-
-            try {
-
-              $raw = Get-Content `
-                evidence/autodesk_executables.json `
-                -Raw
-
-              if ($raw.Trim()) {
-
-                $exe = @(
-                  $raw |
-                    ConvertFrom-Json
-                )
-              }
-
-            } catch {}
-          }
-
-          $acad = @(
-            $exe |
-              Where-Object {
-                $_.Name -ieq "acad.exe"
-              }
-          )
-
-          $revit = @(
-            $exe |
-              Where-Object {
-                $_.Name -ieq "Revit.exe"
-              }
-          )
+            Format-List * |
+            Out-File evidence\autodesk\services.txt
 
           $decision = [ordered]@{
-
-            generated_utc = (
-              Get-Date
-            ).ToUniversalTime().ToString("o")
-
-            AutoCAD = [ordered]@{
-              executable_found = (
-                $acad.Count -gt 0
-              )
-              evidence = $acad
-            }
-
-            Revit = [ordered]@{
-              executable_found = (
-                $revit.Count -gt 0
-              )
-              evidence = $revit
-            }
-          }
-
-          if ($acad.Count -eq 0) {
-
-            $decision.AutoCAD.status =
-              "NOT_PROVEN"
-
-          } else {
-
-            $decision.AutoCAD.status =
-              "EXECUTABLE_PROVEN"
-          }
-
-          if ($revit.Count -eq 0) {
-
-            $decision.Revit.status =
-              "NOT_PROVEN"
-
-          } else {
-
-            $decision.Revit.status =
-              "EXECUTABLE_PROVEN"
+            acad_exe_found = [bool]($acad.Count -gt 0)
+            revit_exe_found = [bool]($revit.Count -gt 0)
+            acad_process = [bool]((Get-Process acad -ErrorAction SilentlyContinue))
+            revit_process = [bool]((Get-Process Revit -ErrorAction SilentlyContinue))
+            evidence_type = "real Windows filesystem/process/registry/signature evidence"
+            download_source_proven = $false
+            license_bypass_used = $false
           }
 
           $decision |
-            ConvertTo-Json -Depth 20 |
-            Out-File evidence/FINAL_AUTODESK_DECISION.json
+            ConvertTo-Json -Depth 10 |
+            Out-File evidence\autodesk\decision.json
 
-      # ---------------------------------------------------------------
-      # 13 ARTIFACT
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------------
+      # GOODDAY
+      # -----------------------------------------------------------------------
+
+      - name: Goodday forensic probe
+        if: matrix.probe == 'goodday'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          New-Item -ItemType Directory -Force -Path evidence\goodday | Out-Null
+
+          Get-ChildItem -Recurse -File |
+            Where-Object {
+              $_.FullName -notmatch '\\.git\\' -and
+              $_.FullName -notmatch '\\.github\\'
+            } |
+            Select-Object FullName,Length,LastWriteTime |
+            ConvertTo-Json -Depth 10 |
+            Out-File evidence\goodday\files.json
+
+          python --version 2>&1 |
+            Out-File evidence\goodday\python.txt
+
+          python -m compileall -q . 2>&1 |
+            Out-File evidence\goodday\compileall.txt
+
+          $compileCode = $LASTEXITCODE
+
+          python -m pytest --collect-only -q 2>&1 |
+            Out-File evidence\goodday\pytest-collect.txt
+
+          $pytestCollectCode = $LASTEXITCODE
+
+          python -m pytest -q 2>&1 |
+            Out-File evidence\goodday\pytest.txt
+
+          $pytestCode = $LASTEXITCODE
+
+          $pyFiles = Get-ChildItem -Recurse -Filter *.py -File |
+            Where-Object {
+              $_.FullName -notmatch '\\.git\\' -and
+              $_.FullName -notmatch '__pycache__'
+            }
+
+          $syntax = @()
+
+          foreach ($file in $pyFiles) {
+            python -m py_compile "$($file.FullName)" 2>&1 |
+              Out-File evidence\goodday\pycompile.txt -Append
+
+            $code = $LASTEXITCODE
+
+            $syntax += [ordered]@{
+              file = $file.FullName
+              compile_exit = $code
+              status = if ($code -eq 0) { "PASS" } else { "FAIL" }
+            }
+          }
+
+          $syntax |
+            ConvertTo-Json -Depth 10 |
+            Out-File evidence\goodday\syntax.json
+
+          $summary = [ordered]@{
+            compileall_exit = $compileCode
+            pytest_collect_exit = $pytestCollectCode
+            pytest_exit = $pytestCode
+            python_files = $pyFiles.Count
+            syntax_failures = @(
+              $syntax |
+              Where-Object { $_.status -eq "FAIL" }
+            ).Count
+          }
+
+          $summary |
+            ConvertTo-Json -Depth 10 |
+            Out-File evidence\goodday\summary.json
+
+      # -----------------------------------------------------------------------
+      # INTEGRITY
+      # -----------------------------------------------------------------------
+
+      - name: Integrity probe
+        if: matrix.probe == 'integrity'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          New-Item -ItemType Directory -Force -Path evidence\integrity | Out-Null
+
+          git status --short |
+            Out-File evidence\integrity\git-status.txt
+
+          git rev-parse HEAD |
+            Out-File evidence\integrity\head.txt
+
+          git ls-files |
+            Out-File evidence\integrity\tracked-files.txt
+
+          git diff --check |
+            Out-File evidence\integrity\diff-check.txt
+
+          Get-ChildItem -Recurse -File |
+            Where-Object {
+              $_.FullName -notmatch '\\.git\\'
+            } |
+            ForEach-Object {
+              try {
+                Get-FileHash $_.FullName -Algorithm SHA256
+              } catch {}
+            } |
+            Export-Csv evidence\integrity\sha256.csv -NoTypeInformation
+
+      # -----------------------------------------------------------------------
+      # UPLOAD
+      # -----------------------------------------------------------------------
 
       - name: Upload forensic evidence
+        if: always()
         uses: actions/upload-artifact@v4
-
         with:
-
-          name: GOODDAY220-REAL-FORENSIC-${{ github.run_id }}
-
+          name: GOODDAY220-${{ matrix.probe }}-${{ github.run_id }}
           path: evidence
+          if-no-files-found: warn
 
-          if-no-files-found: error
+  # ---------------------------------------------------------------------------
+  # AGGREGATE
+  # ---------------------------------------------------------------------------
+
+  aggregate:
+    name: Aggregate real evidence
+    if: always()
+    needs: forensic
+    runs-on: windows-2022
+
+    steps:
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all evidence
+        uses: actions/download-artifact@v4
+        with:
+          path: collected
+
+      - name: Build aggregate report
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path final-evidence | Out-Null
+
+          Get-ChildItem -Recurse -File collected |
+            Select-Object FullName,Length,LastWriteTime |
+            ConvertTo-Json -Depth 10 |
+            Out-File final-evidence/artifacts.json
+
+          $autodesk = Get-ChildItem `
+            -Path collected `
+            -Filter decision.json `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if ($autodesk) {
+            $autodesk |
+              Get-Content |
+              Out-File final-evidence/autodesk-decision.txt
+          }
+
+          $summaries = Get-ChildItem `
+            -Path collected `
+            -Filter summary.json `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if ($summaries) {
+            $summaries |
+              Get-Content |
+              Out-File final-evidence/goodday-summary.txt
+          }
+
+          @"
+          GOODDAY220 REAL LAB RESULT
+          ==========================
+          This report contains evidence collected from Windows.
+          Missing executable/process evidence is NOT interpreted as installation.
+          Digital signature does NOT prove original download URL.
+          No license bypass was used.
+          "@ |
+            Out-File final-evidence/README.txt
+
+      - name: Upload aggregate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-FINAL-${{ github.run_id }}
+          path: final-evidence
+          if-no-files-found: warn
