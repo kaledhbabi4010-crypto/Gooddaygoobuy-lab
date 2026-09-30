@@ -1,0 +1,397 @@
+name: GOODDAY220 Real Windows Full Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_reason:
+        description: "Reason for forensic Windows run"
+        required: false
+        default: "GOODDAY220 full real Windows verification"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  real-windows-lab:
+    name: REAL WINDOWS FORENSIC LAB
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+
+      - name: 01 - Runtime identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== WINDOWS RUNTIME IDENTITY ==="
+          Write-Host "COMPUTERNAME=$env:COMPUTERNAME"
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "RUNNER_TEMP=$env:RUNNER_TEMP"
+          Write-Host "GITHUB_RUN_ID=$env:GITHUB_RUN_ID"
+          Write-Host "GITHUB_REPOSITORY=$env:GITHUB_REPOSITORY"
+
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption,Version,BuildNumber,OSArchitecture |
+            Format-List
+
+          systeminfo | Select-String "OS Name|OS Version|System Type"
+
+      - name: 02 - Python proof
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== PYTHON EXECUTABLES ==="
+
+          where.exe python
+          where.exe py
+          python --version
+          py --version
+
+          Write-Host "=== PYTHON DETAILS ==="
+
+          python -c "import sys,platform,shutil; print('EXE='+sys.executable); print('VERSION='+sys.version); print('PLATFORM='+platform.platform()); print('ARCH='+platform.machine()); print('PYTHON_OK=True'); print('PIP='+str(shutil.which('pip')))"
+
+          python -m pip --version
+
+      - name: 03 - Git and PowerShell proof
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== GIT ==="
+          git --version
+          where.exe git
+
+          Write-Host "=== POWERSHELL ==="
+          $PSVersionTable | Format-List
+
+      - name: 04 - .NET / MSVC / SDK inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== DOTNET ==="
+          dotnet --info
+
+          Write-Host "=== MSVC / VSWHERE ==="
+          where.exe vswhere
+
+          if ($LASTEXITCODE -eq 0) {
+              & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+                -latest `
+                -products * `
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+                -format json
+          }
+
+          Write-Host "=== WINDOWS SDK ==="
+
+          $sdkRoots = @(
+            "${env:ProgramFiles(x86)}\Windows Kits\10\Include",
+            "${env:ProgramFiles}\Windows Kits\10\Include"
+          )
+
+          foreach ($root in $sdkRoots) {
+              if (Test-Path $root) {
+                  Get-ChildItem $root -Directory |
+                    Select-Object FullName
+              }
+          }
+
+      - name: 05 - Hardware and environment evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== CPU ==="
+          Get-CimInstance Win32_Processor |
+            Select-Object Name,NumberOfCores,NumberOfLogicalProcessors
+
+          Write-Host "=== RAM ==="
+          Get-CimInstance Win32_ComputerSystem |
+            Select-Object TotalPhysicalMemory
+
+          Write-Host "=== DISKS ==="
+          Get-CimInstance Win32_LogicalDisk |
+            Select-Object DeviceID,Size,FreeSpace
+
+          Write-Host "=== ADMIN ==="
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal = New-Object Security.Principal.WindowsPrincipal($id)
+          Write-Host ("IsAdmin=" + $principal.IsInRole(
+              [Security.Principal.WindowsBuiltInRole]::Administrator
+          ))
+
+      - name: 06 - Checkout Goodday repository
+        uses: actions/checkout@v4
+        with:
+          repository: kaledhbabi4010-crypto/Gooddaygoobuy-
+          fetch-depth: 0
+
+      - name: 07 - Repository identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== REPOSITORY ==="
+          git remote -v
+          git rev-parse HEAD
+          git status --short
+
+          Write-Host "=== FILE COUNT ==="
+          $files = Get-ChildItem -Recurse -File |
+            Where-Object {
+              $_.FullName -notmatch "\\.git\\"
+            }
+
+          Write-Host ("FILE_COUNT=" + $files.Count)
+
+          Write-Host "=== PYTHON COUNT ==="
+          $py = $files | Where-Object { $_.Extension -eq ".py" }
+          Write-Host ("PYTHON_FILE_COUNT=" + $py.Count)
+
+      - name: 08 - Python syntax and compile proof
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== PYTHON COMPILE ==="
+
+          python -m compileall -q .
+
+          $compileCode = $LASTEXITCODE
+
+          Write-Host ("COMPILE_EXIT_CODE=" + $compileCode)
+
+          if ($compileCode -ne 0) {
+              Write-Host "PYTHON_COMPILE_RESULT=FAIL"
+          }
+          else {
+              Write-Host "PYTHON_COMPILE_RESULT=PASS"
+          }
+
+          exit 0
+
+      - name: 09 - Pytest proof
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== PYTEST VERSION ==="
+          python -m pytest --version
+
+          Write-Host "=== PYTEST COLLECT ==="
+          python -m pytest --collect-only -q
+
+          $collectCode = $LASTEXITCODE
+
+          Write-Host ("PYTEST_COLLECT_EXIT_CODE=" + $collectCode)
+
+          Write-Host "=== PYTEST RUN ==="
+          python -m pytest -q
+
+          $runCode = $LASTEXITCODE
+
+          Write-Host ("PYTEST_RUN_EXIT_CODE=" + $runCode)
+
+          exit 0
+
+      - name: 10 - AutoCAD / Revit / Autodesk runtime evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== AUTOCAD PROCESS ==="
+
+          $acadProc = Get-Process -Name acad -ErrorAction SilentlyContinue
+
+          if ($acadProc) {
+              Write-Host "AUTOCAD_PROCESS=FOUND"
+              $acadProc | Select-Object Id,Path,ProductVersion
+          }
+          else {
+              Write-Host "AUTOCAD_PROCESS=NOT_FOUND"
+          }
+
+          Write-Host "=== REVIT PROCESS ==="
+
+          $revitProc = Get-Process -Name Revit -ErrorAction SilentlyContinue
+
+          if ($revitProc) {
+              Write-Host "REVIT_PROCESS=FOUND"
+              $revitProc | Select-Object Id,Path,ProductVersion
+          }
+          else {
+              Write-Host "REVIT_PROCESS=NOT_FOUND"
+          }
+
+          Write-Host "=== AUTODESK PATHS ==="
+
+          $roots = @(
+            "${env:ProgramFiles}\Autodesk",
+            "${env:ProgramFiles(x86)}\Autodesk",
+            "${env:ProgramData}\Autodesk",
+            "${env:LOCALAPPDATA}\Autodesk"
+          )
+
+          foreach ($root in $roots) {
+              if (Test-Path $root) {
+                  Write-Host "AUTODESK_PATH_FOUND=$root"
+                  Get-ChildItem $root -Force -ErrorAction SilentlyContinue |
+                    Select-Object FullName
+              }
+              else {
+                  Write-Host "AUTODESK_PATH_NOT_FOUND=$root"
+              }
+          }
+
+          Write-Host "=== INSTALLED PRODUCTS ==="
+
+          Get-ItemProperty `
+            HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*,
+            HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.DisplayName -match "AutoCAD|Autodesk|Revit"
+            } |
+            Select-Object DisplayName,DisplayVersion,Publisher,InstallLocation |
+            Format-List
+
+      - name: 11 - Official Autodesk download evidence
+        shell: powershell
+        env:
+          AUTODESK_2019_URL: ${{ secrets.AUTODESK_2019_URL }}
+          AUTODESK_2019_SHA256: ${{ secrets.AUTODESK_2019_SHA256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== AUTODESK 2019 DOWNLOAD TEST ==="
+
+          if ([string]::IsNullOrWhiteSpace($env:AUTODESK_2019_URL)) {
+              Write-Host "AUTODESK_2019_URL=NOT_CONFIGURED"
+              Write-Host "DOWNLOAD_RESULT=NOT_RUN"
+              Write-Host "REASON=Repository secret AUTODESK_2019_URL is not configured."
+              exit 0
+          }
+
+          $uri = [Uri]$env:AUTODESK_2019_URL
+
+          Write-Host ("HOST=" + $uri.Host)
+          Write-Host ("SCHEME=" + $uri.Scheme)
+
+          if ($uri.Scheme -ne "https") {
+              throw "Autodesk download URL must use HTTPS."
+          }
+
+          if (
+              ($uri.Host -ne "autodesk.com") -and
+              (-not $uri.Host.EndsWith(".autodesk.com"))
+          ) {
+              throw "Autodesk download URL is not on an official autodesk.com domain."
+          }
+
+          $out = Join-Path $env:GITHUB_WORKSPACE "autodesk-2019-download"
+
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+          Write-Host "Starting official Autodesk URL download."
+
+          Invoke-WebRequest `
+            -Uri $env:AUTODESK_2019_URL `
+            -OutFile (Join-Path $out "autodesk-2019-package")
+
+          $file = Get-Item (Join-Path $out "autodesk-2019-package")
+
+          Write-Host ("FILE=" + $file.FullName)
+          Write-Host ("SIZE=" + $file.Length)
+
+          $hash = (Get-FileHash `
+            -Path $file.FullName `
+            -Algorithm SHA256).Hash.ToLower()
+
+          Write-Host ("SHA256=" + $hash)
+
+          if (-not [string]::IsNullOrWhiteSpace($env:AUTODESK_2019_SHA256)) {
+
+              $expected = $env:AUTODESK_2019_SHA256.ToLower().Trim()
+
+              Write-Host "EXPECTED_SHA256=[CONFIGURED]"
+
+              if ($hash -ne $expected) {
+                  throw "SHA256 verification FAILED."
+              }
+
+              Write-Host "SHA256_RESULT=PASS"
+          }
+          else {
+              Write-Host "SHA256_RESULT=NOT_VERIFIED"
+              Write-Host "REASON=AUTODESK_2019_SHA256 was not configured."
+          }
+
+          Write-Host "DOWNLOAD_RESULT=PASS"
+
+      - name: 12 - Produce machine-readable evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $report = @{}
+
+          $report.timestamp_utc = (Get-Date).ToUniversalTime().ToString("o")
+          $report.github_run_id = $env:GITHUB_RUN_ID
+          $report.repository = $env:GITHUB_REPOSITORY
+          $report.runner_os = $env:RUNNER_OS
+          $report.runner_arch = $env:RUNNER_ARCH
+          $report.computer = $env:COMPUTERNAME
+
+          try {
+              $report.python_executable = (python -c "import sys; print(sys.executable)" 2>$null)
+              $report.python_version = (python --version 2>&1 | Out-String).Trim()
+          }
+          catch {
+              $report.python_executable = $null
+              $report.python_version = $null
+          }
+
+          $report.autocad_process = [bool](Get-Process -Name acad -ErrorAction SilentlyContinue)
+          $report.revit_process = [bool](Get-Process -Name Revit -ErrorAction SilentlyContinue)
+
+          $report.autodesk_programfiles =
+            Test-Path "${env:ProgramFiles}\Autodesk"
+
+          $report.autodesk_programfiles_x86 =
+            Test-Path "${env:ProgramFiles(x86)}\Autodesk"
+
+          $report.python_files = @(
+              Get-ChildItem -Recurse -File -Filter *.py |
+              Where-Object {
+                  $_.FullName -notmatch "\\.git\\"
+              }
+          ).Count
+
+          $report.repo_head = (git rev-parse HEAD 2>$null)
+
+          $report | ConvertTo-Json -Depth 10 |
+            Out-File `
+              -FilePath "GOODDAY220_WINDOWS_EVIDENCE.json" `
+              -Encoding utf8
+
+          Write-Host "Evidence written:"
+          Get-Content "GOODDAY220_WINDOWS_EVIDENCE.json"
+
+      - name: 13 - Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-WINDOWS-REAL-EVIDENCE-${{ github.run_id }}
+          path: |
+            GOODDAY220_WINDOWS_EVIDENCE.json
+            autodesk-2019-download/**
+          if-no-files-found: warn
+          retention-days: 7
