@@ -1,0 +1,36 @@
+{
+  "schema": "GOODDAY220-WINDOWS-LAB-1",
+  "lab_id": "goodday220-windows-real-lab",
+  "phase": "BASE_ONLY",
+  "base": {
+    "os": "Windows",
+    "runtime_verification": true,
+    "python": true,
+    "git": true,
+    "powershell": true,
+    "dotnet": true,
+    "cmake": true,
+    "msvc": true,
+    "windows_sdk": true,
+    "seven_zip": true
+  },
+  "future_modules": [
+    "goodday",
+    "autocad",
+    "revit"
+  ],
+  "module_policy": {
+    "independent_installation": true,
+    "independent_verification": true,
+    "independent_removal": true,
+    "base_rebuild_required": false,
+    "install_all_at_once_required": false
+  },
+  "current_phase_exclusions": {
+    "source_repository_under_test": false,
+    "autocad_installation": false,
+    "revit_installation": false,
+    "autodesk_installation": false,
+    "azure": false
+  }
+}
