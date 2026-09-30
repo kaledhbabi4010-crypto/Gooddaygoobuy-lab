@@ -1,0 +1,448 @@
+name: GOODDAY220 Windows Real Forensic Gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+
+  windows-real-forensic:
+
+    runs-on: windows-2022
+
+    timeout-minutes: 30
+
+    steps:
+
+      - name: Checkout lab
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # BASE MACHINE
+      # ------------------------------------------------------------------
+
+      - name: Collect Windows base
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          New-Item -ItemType Directory `
+            -Force `
+            -Path evidence | Out-Null
+
+          systeminfo |
+            Out-File evidence/systeminfo.txt
+
+          Get-ComputerInfo |
+            ConvertTo-Json -Depth 5 |
+            Out-File evidence/computerinfo.json
+
+          $PSVersionTable |
+            Out-String |
+            Out-File evidence/powershell.txt
+
+          python --version 2>&1 |
+            Out-File evidence/python.txt
+
+          git --version 2>&1 |
+            Out-File evidence/git.txt
+
+          dotnet --info 2>&1 |
+            Out-File evidence/dotnet.txt
+
+      # ------------------------------------------------------------------
+      # PROCESS FORENSICS
+      # ------------------------------------------------------------------
+
+      - name: Detect Autodesk processes
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          $names = @(
+            "acad",
+            "Revit"
+          )
+
+          $result = @()
+
+          foreach ($name in $names) {
+
+            $p = Get-Process `
+              -Name $name `
+              -ErrorAction SilentlyContinue
+
+            if ($p) {
+
+              foreach ($x in $p) {
+
+                $result += [pscustomobject]@{
+                  Name = $x.ProcessName
+                  Id = $x.Id
+                  Path = try {
+                    $x.Path
+                  } catch {
+                    $null
+                  }
+                }
+              }
+
+            } else {
+
+              $result += [pscustomobject]@{
+                Name = $name
+                Id = $null
+                Path = $null
+              }
+            }
+          }
+
+          $result |
+            ConvertTo-Json -Depth 5 |
+            Out-File evidence/processes.json
+
+      # ------------------------------------------------------------------
+      # FILESYSTEM FORENSICS
+      # ------------------------------------------------------------------
+
+      - name: Search Autodesk executables
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "SilentlyContinue"
+
+          $roots = @(
+            "C:\Program Files\Autodesk",
+            "C:\Program Files (x86)\Autodesk",
+            "C:\Autodesk",
+            "C:\ProgramData\Autodesk",
+            "$env:ProgramData\Autodesk"
+          )
+
+          $targets = @(
+            "acad.exe",
+            "Revit.exe"
+          )
+
+          $found = @()
+
+          foreach ($root in $roots) {
+
+            if (Test-Path $root) {
+
+              foreach ($target in $targets) {
+
+                Get-ChildItem `
+                  -Path $root `
+                  -Filter $target `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue |
+                ForEach-Object {
+
+                  $found += [pscustomobject]@{
+                    Name = $_.Name
+                    FullName = $_.FullName
+                    Length = $_.Length
+                    LastWriteTime = $_.LastWriteTime
+                    Version = (
+                      try {
+                        $_.VersionInfo.FileVersion
+                      } catch {
+                        $null
+                      }
+                    )
+                  }
+                }
+              }
+            }
+          }
+
+          $found |
+            ConvertTo-Json -Depth 8 |
+            Out-File evidence/autodesk_executables.json
+
+      # ------------------------------------------------------------------
+      # REGISTRY FORENSICS
+      # ------------------------------------------------------------------
+
+      - name: Inspect Autodesk registry
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "SilentlyContinue"
+
+          $paths = @(
+            "HKLM:\SOFTWARE\Autodesk",
+            "HKLM:\SOFTWARE\WOW6432Node\Autodesk",
+            "HKCU:\SOFTWARE\Autodesk"
+          )
+
+          $result = @()
+
+          foreach ($p in $paths) {
+
+            if (Test-Path $p) {
+
+              $result += [pscustomobject]@{
+                Path = $p
+                Exists = $true
+                Children = @(
+                  Get-ChildItem $p |
+                    Select-Object -ExpandProperty PSPath
+                )
+              }
+
+            } else {
+
+              $result += [pscustomobject]@{
+                Path = $p
+                Exists = $false
+              }
+            }
+          }
+
+          $result |
+            ConvertTo-Json -Depth 10 |
+            Out-File evidence/autodesk_registry.json
+
+      # ------------------------------------------------------------------
+      # INSTALLATION INVENTORY
+      # ------------------------------------------------------------------
+
+      - name: Windows installed software inventory
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "SilentlyContinue"
+
+          $paths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+          )
+
+          $apps = foreach ($p in $paths) {
+
+            Get-ItemProperty $p |
+              Where-Object {
+                $_.DisplayName -match "Autodesk|AutoCAD|Revit"
+              } |
+              Select-Object `
+                DisplayName,
+                DisplayVersion,
+                Publisher,
+                InstallLocation,
+                UninstallString
+          }
+
+          $apps |
+            ConvertTo-Json -Depth 8 |
+            Out-File evidence/autodesk_installed_software.json
+
+      # ------------------------------------------------------------------
+      # SERVICES
+      # ------------------------------------------------------------------
+
+      - name: Autodesk services
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "SilentlyContinue"
+
+          Get-Service |
+            Where-Object {
+              $_.Name -match "Autodesk|Adsk"
+              -or
+              $_.DisplayName -match "Autodesk|Adsk"
+            } |
+            Select-Object `
+              Name,
+              DisplayName,
+              Status,
+              StartType |
+            ConvertTo-Json -Depth 5 |
+            Out-File evidence/autodesk_services.json
+
+      # ------------------------------------------------------------------
+      # BUILD TOOLCHAIN
+      # ------------------------------------------------------------------
+
+      - name: Visual Studio and build tools
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          where.exe msbuild 2>&1 |
+            Out-File evidence/msbuild.txt
+
+          where.exe dotnet 2>&1 |
+            Out-File evidence/dotnet_path.txt
+
+          where.exe cl 2>&1 |
+            Out-File evidence/cl.txt
+
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -all `
+            -format json `
+            2>&1 |
+            Out-File evidence/vswhere.json
+
+      # ------------------------------------------------------------------
+      # GOODDAY REPOSITORY STATIC GATE
+      # ------------------------------------------------------------------
+
+      - name: Goodday source inventory
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          git status --short |
+            Out-File evidence/git_status.txt
+
+          git rev-parse HEAD |
+            Out-File evidence/git_head.txt
+
+          Get-ChildItem `
+            -Recurse `
+            -File `
+            -Exclude ".git*" |
+            Measure-Object |
+            Out-File evidence/file_count.txt
+
+          Get-ChildItem `
+            -Recurse `
+            -Filter "*.py" `
+            -File |
+            Select-Object FullName |
+            Out-File evidence/python_files.txt
+
+      # ------------------------------------------------------------------
+      # PYTHON SYNTAX / COMPILE
+      # ------------------------------------------------------------------
+
+      - name: Python compile gate
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          python -m compileall -q . 2>&1 |
+            Out-File evidence/compileall.txt
+
+          $code = $LASTEXITCODE
+
+          "EXIT_CODE=$code" |
+            Out-File evidence/compile_exit.txt
+
+      # ------------------------------------------------------------------
+      # PYTEST
+      # ------------------------------------------------------------------
+
+      - name: Pytest discovery
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          python -m pytest `
+            --collect-only `
+            -q `
+            2>&1 |
+            Out-File evidence/pytest_collect.txt
+
+          "EXIT_CODE=$LASTEXITCODE" |
+            Out-File evidence/pytest_collect_exit.txt
+
+      # ------------------------------------------------------------------
+      # FINAL MACHINE DECISION
+      # ------------------------------------------------------------------
+
+      - name: Build forensic decision
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          $exeFile = "evidence/autodesk_executables.json"
+
+          $found = @()
+
+          if (Test-Path $exeFile) {
+
+            try {
+
+              $data = Get-Content `
+                $exeFile `
+                -Raw |
+                ConvertFrom-Json
+
+              if ($data) {
+                $found = @($data)
+              }
+
+            } catch {
+              $found = @()
+            }
+          }
+
+          $acad = @(
+            $found |
+              Where-Object {
+                $_.Name -ieq "acad.exe"
+              }
+          )
+
+          $revit = @(
+            $found |
+              Where-Object {
+                $_.Name -ieq "Revit.exe"
+              }
+          )
+
+          $decision = [ordered]@{
+            timestamp_utc = (
+              Get-Date).ToUniversalTime().ToString("o")
+            autocad = [ordered]@{
+              executable_found = ($acad.Count -gt 0)
+              evidence = $acad
+            }
+            revit = [ordered]@{
+              executable_found = ($revit.Count -gt 0)
+              evidence = $revit
+            }
+          }
+
+          if ($acad.Count -eq 0) {
+
+            $decision.autocad.blocker =
+              "acad.exe was not found in the searched legitimate Autodesk locations."
+          }
+
+          if ($revit.Count -eq 0) {
+
+            $decision.revit.blocker =
+              "Revit.exe was not found in the searched legitimate Autodesk locations."
+          }
+
+          $decision |
+            ConvertTo-Json -Depth 12 |
+            Out-File evidence/FINAL_AUTODESK_DECISION.json
+
+      # ------------------------------------------------------------------
+      # ARTIFACT
+      # ------------------------------------------------------------------
+
+      - name: Upload complete evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-WINDOWS-REAL-FORENSIC-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: error
