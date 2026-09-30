@@ -1,0 +1,641 @@
+name: GOODDAY220 Windows Real Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "New_dad source ref"
+        required: true
+        default: "main"
+
+permissions:
+  contents: read
+
+jobs:
+
+  windows-real-lab:
+
+    name: Windows 2022 — Goodday220 Real Runtime Lab
+
+    runs-on: windows-2022
+
+    timeout-minutes: 45
+
+    steps:
+
+      # ======================================================================
+      # 1. WINDOWS IDENTITY
+      # ======================================================================
+
+      - name: Windows identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\evidence" | Out-Null
+
+          $os = Get-CimInstance Win32_OperatingSystem
+          $cs = Get-CimInstance Win32_ComputerSystem
+          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+
+          $admin = ([Security.Principal.WindowsPrincipal] `
+            [Security.Principal.WindowsIdentity]::GetCurrent()
+          ).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator
+          )
+
+          $identity = [ordered]@{
+            status = if ($admin) { "RUNTIME_CONFIRMED" } else { "NOT_PROVEN" }
+            computer_name = $env:COMPUTERNAME
+            user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+            os_caption = $os.Caption
+            os_version = $os.Version
+            os_build = $os.BuildNumber
+            architecture = $os.OSArchitecture
+            cpu_name = $cpu.Name
+            cpu_count = $cs.NumberOfLogicalProcessors
+            ram_bytes = $cs.TotalPhysicalMemory
+            admin = $admin
+            github_runner = $env:GITHUB_RUNNER
+            runner_os = $env:RUNNER_OS
+            runner_arch = $env:RUNNER_ARCH
+          }
+
+          $identity | ConvertTo-Json -Depth 10 |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\windows-identity.json"
+
+          $identity | ConvertTo-Json -Depth 10
+
+          if (-not $admin) {
+            throw "WINDOWS_ADMIN_RUNTIME_NOT_CONFIRMED"
+          }
+
+      # ======================================================================
+      # 2. STORAGE
+      # ======================================================================
+
+      - name: Storage evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $disks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" |
+            Select-Object DeviceID,Size,FreeSpace
+
+          $disks |
+            ConvertTo-Json -Depth 10 |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\storage.json"
+
+          $disks | Format-Table -AutoSize
+
+      # ======================================================================
+      # 3. BASIC TOOLCHAIN — READ-ONLY FIRST
+      # ======================================================================
+
+      - name: Toolchain detection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          function Find-Cmd {
+            param([string]$Name)
+
+            $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+
+            if ($cmd) {
+              return @{
+                found = $true
+                path = $cmd.Source
+              }
+            }
+
+            return @{
+              found = $false
+              path = $null
+            }
+          }
+
+          $result = [ordered]@{}
+
+          $result.git = Find-Cmd "git"
+          $result.python = Find-Cmd "python"
+          $result.pip = Find-Cmd "pip"
+          $result.dotnet = Find-Cmd "dotnet"
+          $result.cmake = Find-Cmd "cmake"
+          $result.sevenzip = Find-Cmd "7z"
+          $result.powershell = Find-Cmd "pwsh"
+
+          # Git
+          if ($result.git.found) {
+            $result.git.version = (& git --version 2>&1 | Out-String).Trim()
+          }
+
+          # Python
+          if ($result.python.found) {
+            $result.python.version = (& python --version 2>&1 | Out-String).Trim()
+          }
+
+          # .NET
+          if ($result.dotnet.found) {
+            $result.dotnet.version = (& dotnet --info 2>&1 | Out-String)
+          }
+
+          # CMake
+          if ($result.cmake.found) {
+            $result.cmake.version = (& cmake --version 2>&1 | Out-String).Trim()
+          }
+
+          # 7-Zip
+          if ($result.sevenzip.found) {
+            $result.sevenzip.version = (& 7z i 2>&1 | Select-String "7-Zip" | Out-String).Trim()
+          }
+
+          $result |
+            ConvertTo-Json -Depth 20 |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\toolchain-before.json"
+
+          $result | ConvertTo-Json -Depth 20
+
+      # ======================================================================
+      # 4. INSTALL ONLY WHAT IS MISSING
+      #
+      # Important:
+      #   Do NOT run multiple MSI/Visual Studio installers concurrently.
+      # ======================================================================
+
+      - name: Install missing lightweight tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Have($name) {
+            return $null -ne (Get-Command $name -ErrorAction SilentlyContinue)
+          }
+
+          $missing = @()
+
+          if (-not (Have "python")) { $missing += "Python" }
+          if (-not (Have "git")) { $missing += "Git" }
+          if (-not (Have "cmake")) { $missing += "CMake" }
+          if (-not (Have "7z")) { $missing += "7-Zip" }
+          if (-not (Have "dotnet")) { $missing += ".NET" }
+
+          Write-Host "Missing lightweight tools:"
+          $missing | ForEach-Object { Write-Host " - $_" }
+
+          if ($missing.Count -eq 0) {
+            Write-Host "No lightweight installation required."
+            exit 0
+          }
+
+          if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            throw "WINGET_NOT_AVAILABLE_WHEN_INSTALLATION_WAS_REQUIRED"
+          }
+
+          $packages = @()
+
+          if (-not (Have "python")) { $packages += "Python.Python.3.13" }
+          if (-not (Have "git")) { $packages += "Git.Git" }
+          if (-not (Have "cmake")) { $packages += "Kitware.CMake" }
+          if (-not (Have "7z")) { $packages += "7zip.7zip" }
+          if (-not (Have "dotnet")) { $packages += "Microsoft.DotNet.SDK.8" }
+
+          foreach ($id in $packages) {
+
+            Write-Host "Installing $id"
+
+            winget install `
+              --id $id `
+              --exact `
+              --silent `
+              --accept-package-agreements `
+              --accept-source-agreements `
+              --disable-interactivity
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "WINGET_INSTALL_FAILED_$id_EXIT_$LASTEXITCODE"
+            }
+          }
+
+      # ======================================================================
+      # 5. VISUAL STUDIO / MSVC / WINDOWS SDK
+      #
+      # Detection is preferred.
+      # No fake PASS.
+      # ======================================================================
+
+      - name: MSVC and Windows SDK evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $vswhereCandidates = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
+            "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
+          )
+
+          $vswhere = $null
+
+          foreach ($p in $vswhereCandidates) {
+            if ($p -and (Test-Path $p)) {
+              $vswhere = $p
+              break
+            }
+          }
+
+          $result = [ordered]@{
+            vswhere_found = [bool]$vswhere
+            visual_studio = @()
+            msvc = @()
+            windows_sdk = @()
+          }
+
+          if ($vswhere) {
+
+            $instances = & $vswhere `
+              -all `
+              -products "*" `
+              -format json 2>&1
+
+            try {
+              $parsed = $instances | ConvertFrom-Json
+              $result.visual_studio = $parsed
+            }
+            catch {
+              $result.visual_studio = @{
+                parse_error = $_.Exception.Message
+                raw = ($instances | Out-String)
+              }
+            }
+
+            $cl = & $vswhere `
+              -latest `
+              -products "*" `
+              -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -find "VC\Tools\MSVC\*\bin\Hostx64\x64\cl.exe" 2>&1
+
+            if ($LASTEXITCODE -eq 0 -and $cl) {
+              $result.msvc = @($cl)
+            }
+          }
+
+          $sdkRoot = "${env:ProgramFiles(x86)}\Windows Kits\10"
+
+          if (Test-Path "$sdkRoot\Lib") {
+            $result.windows_sdk = @(
+              Get-ChildItem "$sdkRoot\Lib" -Directory -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Name
+            )
+          }
+
+          $result |
+            ConvertTo-Json -Depth 30 |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\msvc-sdk.json"
+
+          $result | ConvertTo-Json -Depth 30
+
+      # ======================================================================
+      # 6. SOURCE CHECKOUT
+      #
+      # IMPORTANT:
+      #   Source is PUBLIC.
+      #   Lab token is NOT passed.
+      # ======================================================================
+
+      - name: Checkout New_dad source
+        uses: actions/checkout@v4
+        with:
+          repository: kaledhbabi4010-crypto/New_dad
+          ref: ${{ inputs.source_ref }}
+          path: source
+
+      # ======================================================================
+      # 7. SOURCE INTEGRITY
+      # ======================================================================
+
+      - name: Source integrity evidence
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $sha = (git rev-parse HEAD).Trim()
+
+          $files = @(git ls-files)
+          $python = @($files | Where-Object { $_ -match '\.py$' })
+
+          $snapshot = [ordered]@{
+            commit = $sha
+            file_count = $files.Count
+            python_file_count = $python.Count
+            python_files = $python
+          }
+
+          $snapshot |
+            ConvertTo-Json -Depth 20 |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\source-snapshot.json"
+
+          $snapshot | ConvertTo-Json -Depth 20
+
+      # ======================================================================
+      # 8. PYTHON FORENSICS
+      #
+      # Never modify source.
+      # ======================================================================
+
+      - name: Python syntax forensic
+        shell: pwsh
+        working-directory: source
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+            "PYTHON_RUNTIME=NOT_PROVEN" |
+              Set-Content "$env:GITHUB_WORKSPACE\evidence\python-status.txt"
+            exit 1
+          }
+
+          python --version
+
+          python -m compileall -q .
+
+          $code = $LASTEXITCODE
+
+          "COMPILEALL_EXIT_CODE=$code" |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\python-compileall.txt"
+
+          if ($code -eq 0) {
+            "PYTHON_COMPILE=RUNTIME_CONFIRMED" |
+              Add-Content "$env:GITHUB_WORKSPACE\evidence\python-compileall.txt"
+          }
+          else {
+            "PYTHON_COMPILE=NOT_PROVEN" |
+              Add-Content "$env:GITHUB_WORKSPACE\evidence\python-compileall.txt"
+          }
+
+      # ======================================================================
+      # 9. PYTEST
+      # ======================================================================
+
+      - name: Pytest forensic
+        shell: pwsh
+        working-directory: source
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          python -m pip install --disable-pip-version-check pytest
+
+          $collectOutput = python -m pytest --collect-only -q 2>&1
+          $collectCode = $LASTEXITCODE
+
+          $collectOutput |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\pytest-collect.txt"
+
+          "EXIT_CODE=$collectCode" |
+            Add-Content "$env:GITHUB_WORKSPACE\evidence\pytest-collect.txt"
+
+          $runOutput = python -m pytest -q 2>&1
+          $runCode = $LASTEXITCODE
+
+          $runOutput |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\pytest-run.txt"
+
+          "EXIT_CODE=$runCode" |
+            Add-Content "$env:GITHUB_WORKSPACE\evidence\pytest-run.txt"
+
+      # ======================================================================
+      # 10. FINAL MACHINE-READABLE STATUS
+      # ======================================================================
+
+      - name: Build final evidence report
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $identity = $null
+          $storage = $null
+          $toolchain = $null
+          $msvc = $null
+          $source = $null
+
+          $paths = @{
+            identity = "$env:GITHUB_WORKSPACE\evidence\windows-identity.json"
+            storage = "$env:GITHUB_WORKSPACE\evidence\storage.json"
+            toolchain = "$env:GITHUB_WORKSPACE\evidence\toolchain-before.json"
+            msvc = "$env:GITHUB_WORKSPACE\evidence\msvc-sdk.json"
+            source = "$env:GITHUB_WORKSPACE\evidence\source-snapshot.json"
+          }
+
+          foreach ($key in $paths.Keys) {
+            if (Test-Path $paths[$key]) {
+              try {
+                Set-Variable -Name $key -Value (
+                  Get-Content $paths[$key] -Raw | ConvertFrom-Json
+                )
+              }
+              catch {}
+            }
+          }
+
+          $compile = $null
+          if (Test-Path "$env:GITHUB_WORKSPACE\evidence\python-compileall.txt") {
+            $compile = Get-Content "$env:GITHUB_WORKSPACE\evidence\python-compileall.txt" -Raw
+          }
+
+          $pytestCollect = $null
+          if (Test-Path "$env:GITHUB_WORKSPACE\evidence\pytest-collect.txt") {
+            $pytestCollect = Get-Content "$env:GITHUB_WORKSPACE\evidence\pytest-collect.txt" -Raw
+          }
+
+          $pytestRun = $null
+          if (Test-Path "$env:GITHUB_WORKSPACE\evidence\pytest-run.txt") {
+            $pytestRun = Get-Content "$env:GITHUB_WORKSPACE\evidence\pytest-run.txt" -Raw
+          }
+
+          $windowsConfirmed = $false
+
+          if (
+            $identity -and
+            $identity.status -eq "RUNTIME_CONFIRMED" -and
+            $identity.admin -eq $true -and
+            $identity.runner_os -eq "Windows"
+          ) {
+            $windowsConfirmed = $true
+          }
+
+          $pythonConfirmed = $false
+          $gitConfirmed = $false
+          $dotnetConfirmed = $false
+          $cmakeConfirmed = $false
+          $sevenZipConfirmed = $false
+
+          if ($toolchain) {
+            $pythonConfirmed = [bool]$toolchain.python.found
+            $gitConfirmed = [bool]$toolchain.git.found
+            $dotnetConfirmed = [bool]$toolchain.dotnet.found
+            $cmakeConfirmed = [bool]$toolchain.cmake.found
+            $sevenZipConfirmed = [bool]$toolchain.sevenzip.found
+          }
+
+          $compileConfirmed = (
+            $compile -and
+            $compile -match "PYTHON_COMPILE=RUNTIME_CONFIRMED"
+          )
+
+          $report = [ordered]@{
+
+            schema = "GOODDAY220-WINDOWS-REAL-LAB-v1"
+
+            generated_utc =
+              (Get-Date).ToUniversalTime().ToString("o")
+
+            github = @{
+              repository = "${{ github.repository }}"
+              workflow = "${{ github.workflow }}"
+              run_id = "${{ github.run_id }}"
+              run_attempt = "${{ github.run_attempt }}"
+              sha = "${{ github.sha }}"
+              ref = "${{ github.ref }}"
+            }
+
+            environment = @{
+              windows = if ($windowsConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              autodesk = "EXCLUDED"
+              azure = "NOT_USED"
+            }
+
+            toolchain = @{
+              python = if ($pythonConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              git = if ($gitConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              dotnet = if ($dotnetConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              cmake = if ($cmakeConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              seven_zip = if ($sevenZipConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              msvc = if (
+                $msvc -and
+                $msvc.msvc -and
+                @($msvc.msvc).Count -gt 0
+              ) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              windows_sdk = if (
+                $msvc -and
+                $msvc.windows_sdk -and
+                @($msvc.windows_sdk).Count -gt 0
+              ) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+            }
+
+            source = @{
+              repository = "kaledhbabi4010-crypto/New_dad"
+              requested_ref = "${{ inputs.source_ref }}"
+              checkout = if ($source) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+              commit = if ($source) {
+                $source.commit
+              } else {
+                $null
+              }
+              file_count = if ($source) {
+                $source.file_count
+              } else {
+                $null
+              }
+              python_file_count = if ($source) {
+                $source.python_file_count
+              } else {
+                $null
+              }
+            }
+
+            tests = @{
+              python_compileall = if ($compileConfirmed) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              pytest_collection = if (
+                $pytestCollect -and
+                $pytestCollect -match "EXIT_CODE=0"
+              ) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+
+              pytest_run = if (
+                $pytestRun -and
+                $pytestRun -match "EXIT_CODE=0"
+              ) {
+                "RUNTIME_CONFIRMED"
+              } else {
+                "NOT_PROVEN"
+              }
+            }
+
+            evidence_files = @(
+              Get-ChildItem "$env:GITHUB_WORKSPACE\evidence" -File |
+                Select-Object -ExpandProperty Name
+            )
+          }
+
+          $report |
+            ConvertTo-Json -Depth 50 |
+            Set-Content "$env:GITHUB_WORKSPACE\evidence\FINAL-EVIDENCE.json"
+
+          $report | ConvertTo-Json -Depth 50
+
+      # ======================================================================
+      # 11. UPLOAD EVIDENCE ALWAYS
+      # ======================================================================
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-WINDOWS-REAL-LAB-${{ github.run_id }}
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 14
