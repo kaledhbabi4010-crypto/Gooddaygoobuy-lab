@@ -1,0 +1,660 @@
+name: GOODDAY220 AutoCAD 2019 REAL INSTALLATION
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason"
+        required: false
+        default: "GOODDAY220 AutoCAD 2019 real installation test"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+
+  autocad-2019-real-install:
+
+    name: REAL WINDOWS AUTOCAD 2019 INSTALLATION
+
+    runs-on: windows-latest
+
+    timeout-minutes: 45
+
+    steps:
+
+      # ================================================================
+      # 01 WINDOWS IDENTITY
+      # ================================================================
+
+      - name: 01 - Windows identity
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== WINDOWS ==="
+
+          Write-Host "RUNNER_OS=$env:RUNNER_OS"
+          Write-Host "RUNNER_ARCH=$env:RUNNER_ARCH"
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
+          Write-Host "COMPUTERNAME=$env:COMPUTERNAME"
+          Write-Host "GITHUB_RUN_ID=$env:GITHUB_RUN_ID"
+
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object `
+              Caption,
+              Version,
+              BuildNumber,
+              OSArchitecture |
+            Format-List
+
+      # ================================================================
+      # 02 PYTHON
+      # ================================================================
+
+      - name: 02 - Python proof
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          python --version
+
+          python -c "
+          import sys
+          import platform
+
+          print('PYTHON_EXE=' + sys.executable)
+          print('PYTHON_VERSION=' + sys.version)
+          print('PLATFORM=' + platform.platform())
+          print('ARCH=' + platform.machine())
+          "
+
+      # ================================================================
+      # 03 CHECKOUT GOODDAY
+      # ================================================================
+
+      - name: 03 - Checkout Goodday
+        uses: actions/checkout@v4
+        with:
+          repository: kaledhbabi4010-crypto/Gooddaygoobuy-
+          fetch-depth: 0
+
+      # ================================================================
+      # 04 GOODDAY IDENTITY
+      # ================================================================
+
+      - name: 04 - Goodday repository identity
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== GIT ==="
+
+          git remote -v
+
+          $head = git rev-parse HEAD
+
+          Write-Host "GOODDAY_HEAD=$head"
+
+          $files = Get-ChildItem `
+            -Recurse `
+            -File |
+            Where-Object {
+              $_.FullName -notmatch "\\.git\\"
+            }
+
+          Write-Host "TOTAL_FILES=$($files.Count)"
+
+          $py = $files |
+            Where-Object {
+              $_.Extension -eq ".py"
+            }
+
+          Write-Host "PYTHON_FILES=$($py.Count)"
+
+      # ================================================================
+      # 05 PYTHON COMPILE
+      # ================================================================
+
+      - name: 05 - Python compile evidence
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          python -m compileall -q .
+
+          $code = $LASTEXITCODE
+
+          Write-Host "PYTHON_COMPILE_EXIT_CODE=$code"
+
+          if ($code -eq 0) {
+              Write-Host "PYTHON_COMPILE=PASS"
+          }
+          else {
+              Write-Host "PYTHON_COMPILE=FAIL"
+          }
+
+          # Do NOT fail the job here.
+          # We want the evidence even when compilation fails.
+
+          exit 0
+
+      # ================================================================
+      # 06 PYTEST
+      # ================================================================
+
+      - name: 06 - Pytest evidence
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          python -m pytest --version
+
+          python -m pytest --collect-only -q
+
+          $collect = $LASTEXITCODE
+
+          Write-Host "PYTEST_COLLECT_EXIT_CODE=$collect"
+
+          python -m pytest -q
+
+          $run = $LASTEXITCODE
+
+          Write-Host "PYTEST_RUN_EXIT_CODE=$run"
+
+          exit 0
+
+      # ================================================================
+      # 07 AUTOCAD BEFORE INSTALL
+      # ================================================================
+
+      - name: 07 - AutoCAD pre-install forensic scan
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== AUTOCAD BEFORE INSTALL ==="
+
+          $process = Get-Process `
+            -Name acad `
+            -ErrorAction SilentlyContinue
+
+          if ($process) {
+              Write-Host "AUTOCAD_PREEXISTING_PROCESS=FOUND"
+
+              $process |
+                Select-Object Id,Path,ProductVersion
+          }
+          else {
+              Write-Host "AUTOCAD_PREEXISTING_PROCESS=NOT_FOUND"
+          }
+
+          $paths = @(
+            "${env:ProgramFiles}\Autodesk",
+            "${env:ProgramFiles(x86)}\Autodesk",
+            "${env:ProgramData}\Autodesk"
+          )
+
+          foreach ($path in $paths) {
+
+              if (Test-Path $path) {
+                  Write-Host "AUTODESK_PATH_FOUND=$path"
+              }
+              else {
+                  Write-Host "AUTODESK_PATH_NOT_FOUND=$path"
+              }
+          }
+
+      # ================================================================
+      # 08 OFFICIAL URL VALIDATION
+      # ================================================================
+
+      - name: 08 - Validate official Autodesk URL
+        shell: powershell
+        env:
+          AUTODESK_2019_URL: ${{ secrets.AUTODESK_2019_URL }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "=== AUTODESK URL VALIDATION ==="
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $env:AUTODESK_2019_URL
+            )
+          ) {
+
+              Write-Host "AUTODESK_URL_STATUS=NOT_CONFIGURED"
+
+              Write-Host ""
+              Write-Host "NO OFFICIAL INSTALLER URL WAS PROVIDED."
+              Write-Host ""
+              Write-Host "The workflow will NOT:"
+              Write-Host "- guess a URL"
+              Write-Host "- use a mirror"
+              Write-Host "- use a torrent"
+              Write-Host "- use a cracked installer"
+              Write-Host "- bypass Autodesk authentication"
+              Write-Host ""
+              Write-Host "AUTODESK_INSTALL=NOT_RUN"
+
+              exit 0
+          }
+
+          $uri = [System.Uri]$env:AUTODESK_2019_URL
+
+          Write-Host "URL_SCHEME=$($uri.Scheme)"
+          Write-Host "URL_HOST=$($uri.Host)"
+
+          if ($uri.Scheme -ne "https") {
+              throw "Autodesk URL must use HTTPS."
+          }
+
+          $official =
+            ($uri.Host -eq "autodesk.com") -or
+            $uri.Host.EndsWith(".autodesk.com")
+
+          if (-not $official) {
+              throw "URL is not an official Autodesk domain."
+          }
+
+          Write-Host "AUTODESK_URL_STATUS=OFFICIAL_DOMAIN"
+
+      # ================================================================
+      # 09 DOWNLOAD OFFICIAL INSTALLER
+      # ================================================================
+
+      - name: 09 - Download official AutoCAD 2019 installer
+        shell: powershell
+        env:
+          AUTODESK_2019_URL: ${{ secrets.AUTODESK_2019_URL }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $env:AUTODESK_2019_URL
+            )
+          ) {
+
+              Write-Host "AUTODESK_DOWNLOAD=NOT_RUN"
+              exit 0
+          }
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "$env:GITHUB_WORKSPACE\installer" |
+            Out-Null
+
+          $uri = [System.Uri]$env:AUTODESK_2019_URL
+
+          $extension = ".exe"
+
+          if ($uri.AbsolutePath.EndsWith(".zip")) {
+              $extension = ".zip"
+          }
+
+          $installer =
+            "$env:GITHUB_WORKSPACE\installer\AutoCAD2019$extension"
+
+          Write-Host "DOWNLOAD_SOURCE=OFFICIAL_AUTODESK"
+
+          Invoke-WebRequest `
+            -Uri $env:AUTODESK_2019_URL `
+            -OutFile $installer
+
+          $file = Get-Item $installer
+
+          Write-Host "INSTALLER_PATH=$($file.FullName)"
+          Write-Host "INSTALLER_SIZE=$($file.Length)"
+
+          $hash = (
+            Get-FileHash `
+              -Path $installer `
+              -Algorithm SHA256
+          ).Hash.ToLower()
+
+          Write-Host "INSTALLER_SHA256=$hash"
+
+          if ($file.Length -lt 1000000) {
+              throw "Downloaded file is suspiciously small."
+          }
+
+          Write-Host "AUTODESK_DOWNLOAD=PASS"
+
+      # ================================================================
+      # 10 VERIFY EXPECTED SHA256
+      # ================================================================
+
+      - name: 10 - Verify installer SHA256
+        shell: powershell
+        env:
+          AUTODESK_2019_SHA256: ${{ secrets.AUTODESK_2019_SHA256 }}
+        run: |
+
+          $ErrorActionPreference = "Stop"
+
+          $installer =
+            Get-ChildItem `
+              "$env:GITHUB_WORKSPACE\installer" `
+              -File |
+            Select-Object -First 1
+
+          if (-not $installer) {
+
+              Write-Host "SHA256_VERIFICATION=NOT_RUN"
+              exit 0
+          }
+
+          $actual = (
+            Get-FileHash `
+              -Path $installer.FullName `
+              -Algorithm SHA256
+          ).Hash.ToLower()
+
+          if (
+            [string]::IsNullOrWhiteSpace(
+              $env:AUTODESK_2019_SHA256
+            )
+          ) {
+
+              Write-Host "SHA256_EXPECTED=NOT_CONFIGURED"
+              Write-Host "SHA256_ACTUAL=$actual"
+              Write-Host "SHA256_VERIFICATION=NOT_VERIFIED"
+
+              exit 0
+          }
+
+          $expected =
+            $env:AUTODESK_2019_SHA256.Trim().ToLower()
+
+          if ($actual -ne $expected) {
+              throw "SHA256 mismatch."
+          }
+
+          Write-Host "SHA256_VERIFICATION=PASS"
+
+      # ================================================================
+      # 11 INSTALL AUTOCAD
+      # ================================================================
+
+      - name: 11 - Install AutoCAD 2019
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          $installer =
+            Get-ChildItem `
+              "$env:GITHUB_WORKSPACE\installer" `
+              -File |
+            Select-Object -First 1
+
+          if (-not $installer) {
+
+              Write-Host "AUTOCAD_INSTALL=NOT_RUN"
+              exit 0
+          }
+
+          Write-Host "INSTALLER=$($installer.FullName)"
+
+          Write-Host "=== START INSTALLER ==="
+
+          # Autodesk legacy installers vary in command-line behavior.
+          # We do NOT invent silent switches blindly.
+          #
+          # First attempt: launch installer normally and capture process.
+          #
+          # If the installer is an SFX/self-extracting installer,
+          # it may extract/install using its own Autodesk-supported flow.
+
+          $process = Start-Process `
+            -FilePath $installer.FullName `
+            -PassThru `
+            -Wait
+
+          Write-Host "INSTALLER_EXIT_CODE=$($process.ExitCode)"
+
+          Start-Sleep -Seconds 15
+
+          Write-Host "=== INSTALLATION SCAN ==="
+
+          $roots = @(
+            "${env:ProgramFiles}\Autodesk",
+            "${env:ProgramFiles(x86)}\Autodesk"
+          )
+
+          foreach ($root in $roots) {
+
+              if (Test-Path $root) {
+
+                  Write-Host "AUTODESK_PATH_FOUND=$root"
+
+                  Get-ChildItem `
+                    $root `
+                    -Recurse `
+                    -File `
+                    -ErrorAction SilentlyContinue |
+                  Where-Object {
+                    $_.Name -match "^acad\.exe$"
+                  } |
+                  Select-Object FullName
+              }
+          }
+
+      # ================================================================
+      # 12 FIND ACAD.EXE
+      # ================================================================
+
+      - name: 12 - Locate AutoCAD executable
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          Write-Host "=== SEARCH ACAD.EXE ==="
+
+          $locations = @(
+            "${env:ProgramFiles}\Autodesk",
+            "${env:ProgramFiles(x86)}\Autodesk",
+            "${env:ProgramData}\Autodesk"
+          )
+
+          $acad = @()
+
+          foreach ($location in $locations) {
+
+              if (Test-Path $location) {
+
+                  $found =
+                    Get-ChildItem `
+                      $location `
+                      -Recurse `
+                      -File `
+                      -Filter "acad.exe" `
+                      -ErrorAction SilentlyContinue
+
+                  if ($found) {
+                      $acad += $found
+                  }
+              }
+          }
+
+          if ($acad.Count -eq 0) {
+
+              Write-Host "ACAD_EXE=NOT_FOUND"
+
+              exit 0
+          }
+
+          foreach ($file in $acad) {
+
+              Write-Host "ACAD_EXE_FOUND=$($file.FullName)"
+
+              try {
+
+                  $version =
+                    [System.Diagnostics.FileVersionInfo]::GetVersionInfo(
+                      $file.FullName
+                    )
+
+                  Write-Host "ACAD_PRODUCT_VERSION=$($version.ProductVersion)"
+                  Write-Host "ACAD_FILE_VERSION=$($version.FileVersion)"
+
+              }
+              catch {
+                  Write-Host "VERSION_READ_ERROR=$($_.Exception.Message)"
+              }
+          }
+
+      # ================================================================
+      # 13 LAUNCH AUTOCAD
+      # ================================================================
+
+      - name: 13 - Launch AutoCAD and verify process
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          $acad =
+            Get-ChildItem `
+              "${env:ProgramFiles}\Autodesk",
+              "${env:ProgramFiles(x86)}\Autodesk" `
+              -Recurse `
+              -File `
+              -Filter "acad.exe" `
+              -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $acad) {
+
+              Write-Host "AUTOCAD_LAUNCH=NOT_RUN"
+              Write-Host "AUTOCAD_RUNTIME=NOT_PROVEN"
+
+              exit 0
+          }
+
+          Write-Host "LAUNCHING=$($acad.FullName)"
+
+          $p =
+            Start-Process `
+              -FilePath $acad.FullName `
+              -PassThru
+
+          Start-Sleep -Seconds 20
+
+          $running =
+            Get-Process `
+              -Id $p.Id `
+              -ErrorAction SilentlyContinue
+
+          if ($running) {
+
+              Write-Host "AUTOCAD_RUNTIME=PROVEN"
+              Write-Host "AUTOCAD_PID=$($running.Id)"
+              Write-Host "AUTOCAD_PATH=$($acad.FullName)"
+
+          }
+          else {
+
+              Write-Host "AUTOCAD_RUNTIME=NOT_PROVEN"
+          }
+
+      # ================================================================
+      # 14 FINAL FORENSIC EVIDENCE
+      # ================================================================
+
+      - name: 14 - Final forensic evidence
+        if: always()
+        shell: powershell
+        run: |
+
+          $ErrorActionPreference = "Continue"
+
+          $e = [ordered]@{}
+
+          $e.timestamp_utc =
+            (Get-Date).ToUniversalTime().ToString("o")
+
+          $e.github_run_id =
+            $env:GITHUB_RUN_ID
+
+          $e.runner_os =
+            $env:RUNNER_OS
+
+          $e.runner_arch =
+            $env:RUNNER_ARCH
+
+          $e.computer =
+            $env:COMPUTERNAME
+
+          $e.python =
+            (python --version 2>&1 |
+              Out-String).Trim()
+
+          $e.python_executable =
+            (python -c "import sys; print(sys.executable)" 2>$null)
+
+          $e.goodday_head =
+            (git rev-parse HEAD 2>$null)
+
+          $e.autocad_process =
+            [bool](
+              Get-Process `
+                -Name acad `
+                -ErrorAction SilentlyContinue
+            )
+
+          $e.autocad_executable = @(
+            Get-ChildItem `
+              "${env:ProgramFiles}\Autodesk",
+              "${env:ProgramFiles(x86)}\Autodesk" `
+              -Recurse `
+              -File `
+              -Filter "acad.exe" `
+              -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $_.FullName
+            }
+          )
+
+          $e.autodesk_path =
+            Test-Path "${env:ProgramFiles}\Autodesk"
+
+          $e.autodesk_path_x86 =
+            Test-Path "${env:ProgramFiles(x86)}\Autodesk"
+
+          $e |
+            ConvertTo-Json -Depth 20 |
+            Out-File `
+              "GOODDAY220_AUTOCAD2019_EVIDENCE.json" `
+              -Encoding utf8
+
+          Get-Content `
+            "GOODDAY220_AUTOCAD2019_EVIDENCE.json"
+
+      # ================================================================
+      # 15 UPLOAD FORENSIC EVIDENCE
+      # ================================================================
+
+      - name: 15 - Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-AUTOCAD2019-REAL-${{ github.run_id }}
+          path: |
+            GOODDAY220_AUTOCAD2019_EVIDENCE.json
+            installer/**
+          if-no-files-found: warn
+          retention-days: 7
