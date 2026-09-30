@@ -1,0 +1,295 @@
+name: GOODDAY220 - Windows Capability and Persistence Forensic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-forensic:
+    name: REAL WINDOWS CAPABILITY FORENSIC
+    runs-on: windows-latest
+
+    timeout-minutes: 20
+
+    steps:
+
+      - name: System identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          New-Item -ItemType Directory -Force -Path evidence | Out-Null
+
+          "=== SYSTEM ===" | Tee-Object evidence/system.txt
+          Get-ComputerInfo |
+            Select-Object WindowsProductName,
+                          WindowsVersion,
+                          OsBuildNumber,
+                          OsArchitecture,
+                          CsName,
+                          CsNumberOfLogicalProcessors,
+                          CsTotalPhysicalMemory |
+            Format-List |
+            Tee-Object -FilePath evidence/system.txt -Append
+
+          "=== ENVIRONMENT ===" |
+            Tee-Object evidence/environment.txt
+
+          Get-ChildItem Env: |
+            Where-Object {
+              $_.Name -notmatch "TOKEN|SECRET|PASSWORD|KEY"
+            } |
+            Sort-Object Name |
+            Format-Table -AutoSize |
+            Out-String |
+            Tee-Object evidence/environment.txt -Append
+
+      - name: Virtualization evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          "=== SYSTEMINFO VIRTUALIZATION ===" |
+            Out-File evidence/virtualization.txt
+
+          systeminfo |
+            Select-String -Pattern `
+              "Hyper-V", `
+              "Virtualization", `
+              "VM Monitor Mode Extensions", `
+              "Second Level Address Translation", `
+              "Data Execution Prevention" |
+            Tee-Object evidence/virtualization.txt -Append
+
+          "`n=== CPU ===" |
+            Tee-Object evidence/virtualization.txt -Append
+
+          Get-CimInstance Win32_Processor |
+            Select-Object Name,
+                          Manufacturer,
+                          NumberOfCores,
+                          NumberOfLogicalProcessors,
+                          VirtualizationFirmwareEnabled,
+                          VMMonitorModeExtensions,
+                          SecondLevelAddressTranslationExtensions |
+            Format-List |
+            Tee-Object evidence/virtualization.txt -Append
+
+      - name: Hyper-V discovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          "=== OPTIONAL FEATURES ===" |
+            Out-File evidence/hyperv.txt
+
+          Get-WindowsOptionalFeature -Online |
+            Where-Object {
+              $_.FeatureName -match "Hyper-V|VirtualMachinePlatform|Containers"
+            } |
+            Select-Object FeatureName, State |
+            Format-Table -AutoSize |
+            Tee-Object evidence/hyperv.txt -Append
+
+          "`n=== HYPERV MODULE ===" |
+            Tee-Object evidence/hyperv.txt -Append
+
+          if (Get-Module -ListAvailable Hyper-V) {
+            "HYPERV_MODULE=FOUND" |
+              Tee-Object evidence/hyperv.txt -Append
+          } else {
+            "HYPERV_MODULE=NOT_FOUND" |
+              Tee-Object evidence/hyperv.txt -Append
+          }
+
+      - name: Virtual machine software discovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $names = @(
+            "VirtualBox",
+            "VMware",
+            "qemu",
+            "qemu-system-x86_64",
+            "packer",
+            "vagrant",
+            "docker",
+            "az",
+            "aws",
+            "gcloud",
+            "gh"
+          )
+
+          "=== EXECUTABLES ===" |
+            Out-File evidence/software.txt
+
+          foreach ($n in $names) {
+            $cmd = Get-Command $n -ErrorAction SilentlyContinue
+
+            if ($cmd) {
+              "FOUND: $n -> $($cmd.Source)" |
+                Tee-Object evidence/software.txt -Append
+
+              try {
+                & $cmd.Source --version 2>&1 |
+                  Select-Object -First 3 |
+                  Tee-Object evidence/software.txt -Append
+              } catch {}
+            }
+            else {
+              "NOT_FOUND: $n" |
+                Tee-Object evidence/software.txt -Append
+            }
+          }
+
+      - name: Windows services and persistent storage evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          "=== RUNNER SERVICE ===" |
+            Out-File evidence/persistence.txt
+
+          Get-Service |
+            Where-Object {
+              $_.Name -match "actions|runner|hyper|docker|vmware|virtual"
+            } |
+            Select-Object Name, Status, StartType |
+            Format-Table -AutoSize |
+            Tee-Object evidence/persistence.txt -Append
+
+          "`n=== DISKS ===" |
+            Tee-Object evidence/persistence.txt -Append
+
+          Get-Disk |
+            Select-Object Number,
+                          FriendlyName,
+                          SerialNumber,
+                          BusType,
+                          Size,
+                          PartitionStyle |
+            Format-Table -AutoSize |
+            Tee-Object evidence/persistence.txt -Append
+
+      - name: Cloud environment evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          "=== CLOUD ENVIRONMENT ===" |
+            Out-File evidence/cloud.txt
+
+          $checks = @(
+            "AZURE",
+            "AWS",
+            "GCP",
+            "GOOGLE",
+            "CLOUD"
+          )
+
+          foreach ($c in $checks) {
+            Get-ChildItem Env: |
+              Where-Object {
+                $_.Name -match $c
+              } |
+              ForEach-Object {
+                "$($_.Name)=PRESENT" |
+                  Tee-Object evidence/cloud.txt -Append
+              }
+          }
+
+          "`n=== AZ CLI ===" |
+            Tee-Object evidence/cloud.txt -Append
+
+          if (Get-Command az -ErrorAction SilentlyContinue) {
+            az version 2>&1 |
+              Tee-Object evidence/cloud.txt -Append
+          } else {
+            "AZ_CLI=NOT_FOUND" |
+              Tee-Object evidence/cloud.txt -Append
+          }
+
+          "`n=== AWS CLI ===" |
+            Tee-Object evidence/cloud.txt -Append
+
+          if (Get-Command aws -ErrorAction SilentlyContinue) {
+            aws --version 2>&1 |
+              Tee-Object evidence/cloud.txt -Append
+          } else {
+            "AWS_CLI=NOT_FOUND" |
+              Tee-Object evidence/cloud.txt -Append
+          }
+
+          "`n=== GCP CLI ===" |
+            Tee-Object evidence/cloud.txt -Append
+
+          if (Get-Command gcloud -ErrorAction SilentlyContinue) {
+            gcloud version 2>&1 |
+              Tee-Object evidence/cloud.txt -Append
+          } else {
+            "GCLOUD_CLI=NOT_FOUND" |
+              Tee-Object evidence/cloud.txt -Append
+          }
+
+      - name: GitHub runner identity
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          "=== GITHUB RUNNER ===" |
+            Out-File evidence/github-runner.txt
+
+          "RUNNER_NAME=$env:RUNNER_NAME" |
+            Tee-Object evidence/github-runner.txt -Append
+
+          "RUNNER_OS=$env:RUNNER_OS" |
+            Tee-Object evidence/github-runner.txt -Append
+
+          "RUNNER_ARCH=$env:RUNNER_ARCH" |
+            Tee-Object evidence/github-runner.txt -Append
+
+          "RUNNER_LABELS=$env:RUNNER_LABELS" |
+            Tee-Object evidence/github-runner.txt -Append
+
+          "GITHUB_WORKSPACE=$env:GITHUB_WORKSPACE" |
+            Tee-Object evidence/github-runner.txt -Append
+
+          "RUNNER_TEMP=$env:RUNNER_TEMP" |
+            Tee-Object evidence/github-runner.txt -Append
+
+      - name: Persistence conclusion
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          $lines = @()
+
+          $lines += "GOODDAY220 WINDOWS PERSISTENCE CONCLUSION"
+          $lines += "======================================="
+          $lines += ""
+          $lines += "HOST_TYPE=GITHUB_HOSTED"
+          $lines += "PERSISTENT_WINDOWS=NOT_PROVEN"
+          $lines += "RUNNER_VM_PERSISTENCE=NOT_PROVEN"
+          $lines += "AUTOCAD_PERSISTENCE=NOT_PROVEN"
+          $lines += ""
+          $lines += "IMPORTANT:"
+          $lines += "This workflow does NOT claim that the GitHub-hosted"
+          $lines += "Windows VM survives after the workflow."
+          $lines += "It only measures what the VM can technically provide."
+          $lines += ""
+          $lines += "A persistent Windows environment requires a machine"
+          $lines += "managed outside the normal GitHub-hosted VM lifecycle,"
+          $lines += "typically a self-hosted runner."
+
+          $lines |
+            Set-Content evidence/conclusion.txt
+
+      - name: Upload forensic evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOODDAY220-WINDOWS-CAPABILITY-${{ github.run_id }}
+          path: evidence
+          if-no-files-found: error
